@@ -1,6 +1,7 @@
 import torch.nn as nn
 
 
+
 class TextSentiment(nn.Module):
     def __init__(self, vocab_size, embed_dim, num_class):
         super().__init__()

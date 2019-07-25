@@ -5,6 +5,7 @@ import argparse
 from torchtext.datasets.text_classification import text_normalize
 
 
+
 def predict(text, model, dictionary):
     with torch.no_grad():
         text = torch.tensor([dictionary.get(token, dictionary['<unk>'])
