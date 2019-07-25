@@ -5,7 +5,6 @@ import torch
 import csv
 from torchtext.utils import download_from_url, extract_archive, unicode_csv_reader
 from torchtext.data.utils import generate_ngrams
-import random
 from tqdm import tqdm
 
 from collections import Counter
@@ -348,7 +347,7 @@ def AmazonReviewPolarity(root='.data', ngrams=1):
             Default: 1
 
     Examples:
-        >>> train_dataset, test_dataset = torchtext.datasets.AmazonReviewPolarity(ngrams=3)
+       >>> train_dataset, test_dataset = torchtext.datasets.AmazonReviewPolarity(ngrams=3)
 
     """
 
