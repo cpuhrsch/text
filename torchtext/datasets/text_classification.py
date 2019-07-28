@@ -6,6 +6,7 @@ from torchtext.data.utils import ngrams_iterator
 from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
 from torchtext.vocab import Vocab
+from tqdm import tqdm
 
 URLS = {
     'AG_NEWS':
@@ -26,29 +27,56 @@ URLS = {
         'https://drive.google.com/uc?export=download&id=0Bz8a_Dbh9QhbZVhsUnRWRDhETzA'
 }
 
-
-def _csv_iterator(data_path, ngrams, yield_cls=False):
+def _process_row(row, yield_cls, ngrams):
     tokenizer = get_tokenizer("basic_english")
-    with io.open(data_path, encoding="utf8") as f:
-        reader = unicode_csv_reader(f)
-        for row in reader:
-            tokens = ' '.join(row[1:])
-            tokens = tokenizer(tokens)
-            if yield_cls:
-                yield int(row[0]) - 1, ngrams_iterator(tokens, ngrams)
-            else:
-                yield ngrams_iterator(tokens, ngrams)
+    tokens = ' '.join(row[1:])
+    tokens = tokenizer(tokens)
+    if yield_cls:
+        return int(row[0]) - 1, ngrams_iterator(tokens, ngrams)
+    else:
+        return ngrams_iterator(tokens, ngrams)
+
+
+def _process_rows(rows, yield_cls, ngrams):
+    return list(iter(list(_process_row(row, yield_cls, ngrams))) for row in rows)
+
+
+def _csv_iterator(data_path, ngrams, yield_cls=False, concurrent=True):
+    if concurrent:
+        import concurrent.futures
+        # We can use a with statement to ensure threads are cleaned up promptly
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor, io.open(data_path, encoding="utf8") as f:
+            # Start the load operations and mark each future with its URL
+            reader = unicode_csv_reader(f)
+            def _futures_iterator():
+                row_buffer = []
+                for i, row in enumerate(reader):
+                    row_buffer.append(row)
+                    if i % 512 == 0:
+                        yield executor.submit(_process_rows, row_buffer, yield_cls, ngrams)
+                        row_buffer = []
+                yield executor.submit(_process_rows, row_buffer, yield_cls, ngrams)
+            for future in concurrent.futures.as_completed(_futures_iterator()):
+                for row in future.result():
+                    yield row
+    else:
+        with io.open(data_path, encoding="utf8") as f:
+            reader = unicode_csv_reader(f)
+            for row in reader:
+                yield _process_row(row, yield_cls, ngrams)
 
 
 def _create_data_from_iterator(vocab, iterator):
     data = []
     labels = []
-    for cls, tokens in iterator:
-        tokens = torch.tensor([vocab[token] for token in tokens])
-        if len(tokens) == 0:
-            logging.info('Row contains no tokens.')
-        data.append((cls, tokens))
-        labels.append(cls)
+    with tqdm(unit_scale=0, unit='tokens') as t:
+        for cls, tokens in iterator:
+            tokens = torch.tensor([vocab[token] for token in tokens])
+            if len(tokens) == 0:
+                logging.info('Row contains no tokens.')
+            data.append((cls, tokens))
+            labels.append(cls)
+            t.update(len(tokens))
     return data, set(labels)
 
 
@@ -115,12 +143,15 @@ def _setup_datasets(dataset_name, root='.data', ngrams=2, vocab=None):
         if not isinstance(vocab, Vocab):
             raise TypeError("Passed vocabulary is not of type Vocab")
     logging.info('Vocab has {} entries'.format(len(vocab)))
+    import time
+    t0 = time.time()
     logging.info('Creating training data')
     train_data, train_labels = _create_data_from_iterator(
         vocab, _csv_iterator(train_csv_path, ngrams, yield_cls=True))
     logging.info('Creating testing data')
     test_data, test_labels = _create_data_from_iterator(
         vocab, _csv_iterator(test_csv_path, ngrams, yield_cls=True))
+    print("ts: " + str(time.time() - t0))
     if len(train_labels ^ test_labels) > 0:
         raise ValueError("Training and test labels don't match")
     return (TextClassificationDataset(vocab, train_data, train_labels),

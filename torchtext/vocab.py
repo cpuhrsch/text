@@ -557,5 +557,6 @@ def build_vocab_from_iterator(iterator):
         for tokens in iterator:
             counter.update(tokens)
             t.update(1)
+    print("len(counter): " + str(len(counter)))
     word_vocab = Vocab(counter)
     return word_vocab
