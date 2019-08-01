@@ -78,9 +78,9 @@ def train_and_valid(lr_, num_epoch, sub_train_, sub_valid_):
             loss = criterion(output, cls)
             loss.backward()
             optimizer.step()
-            processed_lines = i + len(data) * epoch
+            processed_lines = i + len(train_data) * epoch
             progress = processed_lines / float(num_lines)
-            if processed_lines % 1024:
+            if processed_lines % 1024 == 0:
                 sys.stderr.write(
                     "\rProgress: {:3.0f}% lr: {:3.3f} loss: {:3.3f}".format(
                         progress * 100, scheduler.get_lr()[0], loss))
