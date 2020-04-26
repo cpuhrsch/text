@@ -8,8 +8,7 @@ def benchmark_fasttext():
     ft = vocab.FastText()
     train, test = experimental.datasets.raw.AG_NEWS()
     tokenizer = get_tokenizer('basic_english')
-    # strings = list(tokenizer(s) for (l, s) in train)
-    strings = list(_torchtext.StringList(tokenizer(s)) for (l, s) in train)
+    strings = list(tokenizer(s) for (l, s) in train)
     print("starting")
     t0 = time.monotonic()
     for sl in strings:
