@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include <unordered_map>
+#include <c10/util/SmallVector.h>
 
 // Fowler-Noll-Vo hash function
 uint32_t hash(const std::string& str) {
@@ -16,7 +17,8 @@ struct Vocab {
   Vocab(std::vector<std::string> itos, at::Tensor vectors,
         at::Tensor unk_vector)
       : _vectors(
-            at::cat({vectors, unk_vector.reshape({1, unk_vector.size(0)})})) {
+            at::cat({vectors, unk_vector.reshape({1, unk_vector.size(0)})})),
+        _unk_index(vectors.size(0)) {
     int64_t index = 0;
     _map.reserve(itos.size());
     for (const std::string & t : itos) {
@@ -32,24 +34,27 @@ struct Vocab {
     return _vectors[search->second];
   }
   // -1 because of unk_vector
-  int64_t __len__() { return _vectors.size(0) - 1; }
+  int64_t __len__() { return _unk_index; }
   at::Tensor get_vecs_by_tokens(const std::vector<std::string> &tokens) {
-    std::vector<int64_t> indices(tokens.size(), _vectors.size(0) - 1);
     int64_t index = 0;
+    at::Tensor indices = torch::empty({int64_t(tokens.size())}, at::TensorOptions(torch::Dtype::Long));
+    auto indices_accessor = indices.accessor<int64_t, 1>();
     for (const std::string &token : tokens) {
       auto search = _map.find(hash(token));
       if (search != _map.end()) {
-        indices[index] = search->second;
+        indices_accessor[index] = search->second;
+      } else {
+        indices_accessor[index] = _unk_index;
       }
       index++;
     }
-    at::Tensor ind = torch::tensor(indices);
-    return at::index_select(_vectors, 0, ind);
+    return at::index_select(_vectors, 0, indices);
   }
 
 private:
   std::unordered_map<uint32_t, int64_t> _map;
   at::Tensor _vectors;
+  int64_t _unk_index;
 };
 
 PYBIND11_MODULE(_torchtext, m) { 
