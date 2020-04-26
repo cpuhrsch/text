@@ -474,11 +474,11 @@ class Vectors(object):
             >>> vec = text.vocab.GloVe(name='6B', dim=50)
             >>> ret = vec.get_vecs_by_tokens(tokens, lower_case_backup=True)
         """
-        to_reduce = False
+        # to_reduce = False
 
-        if not isinstance(tokens, list):
-            tokens = [tokens]
-            to_reduce = True
+        # if not isinstance(tokens, list):
+        #     tokens = [tokens]
+        #     to_reduce = True
 
         if lower_case_backup:
             indices = [
@@ -491,7 +491,8 @@ class Vectors(object):
         vecs = self.c_vocab.get_vecs_by_tokens(tokens)
         # indices = [self[token] for token in tokens]
         # vecs = torch.stack(indices)
-        return vecs[0] if to_reduce else vecs
+        # return vecs[0] if to_reduce else vecs
+        return vecs
 
 
 class CharVectors(object):
