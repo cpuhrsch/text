@@ -18,7 +18,7 @@ struct Vocab {
     if (search == _map.end()) {
       return _vectors[_vectors.size(0) - 1].clone();
     }
-    return _vectors[search->second].clone();
+    return _vectors[search->second];
   }
   // -1 because of unk_vector
   int64_t __len__() { return _vectors.size(0) - 1; }
