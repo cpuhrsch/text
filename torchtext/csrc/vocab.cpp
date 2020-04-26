@@ -33,7 +33,6 @@ struct Vocab {
     }
     return _vectors[search->second];
   }
-  // -1 because of unk_vector
   int64_t __len__() { return _unk_index; }
   at::Tensor get_vecs_by_tokens(const std::vector<std::string> &tokens) {
     int64_t index = 0;
