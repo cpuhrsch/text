@@ -1,6 +1,17 @@
 #include <torch/extension.h>
 #include <unordered_map>
 
+// Fowler-Noll-Vo hash function
+uint32_t hash(const std::string& str) {
+  const char* c_str = str.c_str();
+  uint32_t h = 2166136261;
+  for (size_t i = 0; i < str.size(); i++) {
+    h = h ^ uint32_t(static_cast<int8_t>(c_str[i]));
+    h = h * 16777619;
+  }
+  return h;
+}
+
 struct Vocab {
   Vocab(std::vector<std::string> itos, at::Tensor vectors,
         at::Tensor unk_vector)
@@ -9,12 +20,12 @@ struct Vocab {
     int64_t index = 0;
     _map.reserve(itos.size());
     for (const std::string & t : itos) {
-      _map.insert({t, index});
+      _map.insert({hash(t), index});
       index++;
     }
   }
   at::Tensor __getitem__(const std::string &token) {
-    auto search = _map.find(token);
+    auto search = _map.find(hash(token));
     if (search == _map.end()) {
       return _vectors[_vectors.size(0) - 1].clone();
     }
@@ -23,14 +34,11 @@ struct Vocab {
   // -1 because of unk_vector
   int64_t __len__() { return _vectors.size(0) - 1; }
   at::Tensor get_vecs_by_tokens(const std::vector<std::string> &tokens) {
-    std::vector<int64_t> indices;
-    indices.resize(tokens.size());
+    std::vector<int64_t> indices(tokens.size(), _vectors.size(0) - 1);
     int64_t index = 0;
     for (const std::string &token : tokens) {
-      auto search = _map.find(token);
-      if (search == _map.end()) {
-        indices[index] = _vectors.size(0) - 1;
-      } else {
+      auto search = _map.find(hash(token));
+      if (search != _map.end()) {
         indices[index] = search->second;
       }
       index++;
@@ -40,7 +48,7 @@ struct Vocab {
   }
 
 private:
-  std::unordered_map<std::string, int64_t> _map;
+  std::unordered_map<uint32_t, int64_t> _map;
   at::Tensor _vectors;
 };
 
