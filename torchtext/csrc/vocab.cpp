@@ -16,6 +16,7 @@ uint32_t hash(const std::string &str) {
   return hash(str.c_str(), strlen(str.c_str()));
 }
 
+// Fowler-Noll-Vo hash function
 void hashes(const std::vector<std::string> &strs, 
     uint32_t* h_vec, size_t len) {
   for (size_t i = 0; i < len; i++) {
