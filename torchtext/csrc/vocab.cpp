@@ -16,6 +16,20 @@ uint32_t hash(const std::string &str) {
   return hash(str.c_str(), strlen(str.c_str()));
 }
 
+void hashes(const std::vector<std::string> &strs, 
+    uint32_t* h_vec, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    h_vec[i] = 2166136261;
+  }
+  for (size_t i = 0; i < len; i++) {
+    const char* c_str = strs[i].c_str();
+    for (size_t j = 0; j < strlen(c_str); j++) {
+      h_vec[i] = h_vec[i] ^ uint32_t(static_cast<int8_t>(c_str[j]));
+      h_vec[i] = h_vec[i] * 16777619;
+    }
+  }
+}
+
 struct Vocab {
   Vocab(std::vector<std::string> itos, at::Tensor vectors,
         at::Tensor unk_vector)
@@ -42,8 +56,11 @@ struct Vocab {
     at::Tensor indices = torch::empty({int64_t(tokens.size())},
                                       at::TensorOptions(torch::Dtype::Long));
     auto indices_accessor = indices.accessor<int64_t, 1>();
-    for (const std::string &token : tokens) {
-      auto search = _map.find(hash(token));
+    size_t len = tokens.size();
+    uint32_t *h_vec = static_cast<uint32_t *>(malloc(sizeof(uint32_t) * len));
+    hashes(tokens, h_vec, len);
+    for (size_t i = 0; i < len; i++) {
+      auto search = _map.find(h_vec[i]);
       if (search != _map.end()) {
         indices_accessor[index] = search->second;
       } else {
