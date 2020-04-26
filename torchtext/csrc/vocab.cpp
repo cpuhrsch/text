@@ -42,7 +42,6 @@ struct Vocab {
 private:
   std::unordered_map<std::string, int64_t> _map;
   at::Tensor _vectors;
-  int64_t _dim;
 };
 
 PYBIND11_MODULE(_torchtext, m) { 
