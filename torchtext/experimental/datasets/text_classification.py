@@ -3,6 +3,19 @@ from torchtext.data.utils import get_tokenizer
 from torchtext.data.utils import ngrams_iterator
 from torchtext.vocab import build_vocab_from_iterator
 from torchtext.experimental.datasets.raw import text_classification as raw
+from torchtext.experimental.functional import (
+    vocab_func,
+    totensor,
+    ngrams_func,
+    sequential_transforms,
+)
+
+
+def _build_vocab(data, transforms):
+    tok_list = []
+    for _, txt in data:
+        tok_list.append(transforms(txt))
+    return build_vocab_from_iterator(tok_list)
 
 
 class TextClassificationDataset(torch.utils.data.Dataset):
