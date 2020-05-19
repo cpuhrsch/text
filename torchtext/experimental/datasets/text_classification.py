@@ -1,6 +1,5 @@
 import torch
 from torchtext.data.utils import get_tokenizer
-from torchtext.data.utils import ngrams_iterator
 from torchtext.vocab import build_vocab_from_iterator
 from torchtext.experimental.datasets.raw import text_classification as raw
 from torchtext.experimental.functional import (
@@ -47,7 +46,9 @@ class TextClassificationDataset(torch.utils.data.Dataset):
         self.transforms = transforms  # (label_transforms, tokens_transforms)
 
     def __getitem__(self, i):
-        return tuple(t(d) for (t, d) in zip(self.transforms, self.data[i]))
+        label = self.data[i][0]
+        txt = self.data[i][1]
+        return (self.transforms[0](label), self.transforms[1](txt))
 
     def __len__(self):
         return len(self.data)
@@ -71,37 +72,34 @@ def _setup_datasets(
     tokenizer=None,
     data_select=("train", "test"),
 ):
+    text_transform = []
     if tokenizer is None:
         tokenizer = get_tokenizer("basic_english")
-
-    def ngram_tokenizer(x):
-        return ngrams_iterator(tokenizer(x), ngrams)
+    text_transform = sequential_transforms(tokenizer, ngrams_func(ngrams))
 
     if isinstance(data_select, str):
         data_select = [data_select]
     if not set(data_select).issubset(set(("train", "test"))):
         raise TypeError("Given data selection {} is not supported!".format(data_select))
     train, test = raw.DATASETS[dataset_name](root=root)
-    # Materialize and store raw text iterable dataset
+    # Cache raw text iterable dataset
     raw_data = {
         "train": [(label, txt) for (label, txt) in train],
         "test": [(label, txt) for (label, txt) in test],
     }
+
     if vocab is None:
         if "train" not in data_select:
             raise TypeError("Must pass a vocab if train is not selected.")
-        vocab = build_vocab_from_iterator(
-            iter(ngram_tokenizer(txt) for (label, txt) in raw_data["train"])
-        )
-
-    def totensor(x):
-        return torch.tensor(x, dtype=torch.long)
-
-    def numericalizer(x):
-        return totensor(list(vocab[xi] for xi in ngram_tokenizer(x)))
-
+        vocab = _build_vocab(raw_data["train"], text_transform)
+    text_transform = sequential_transforms(
+        text_transform, vocab_func(vocab), totensor(dtype=torch.long)
+    )
+    label_transform = sequential_transforms(totensor(dtype=torch.long))
     return tuple(
-        TextClassificationDataset(raw_data[item], vocab, (totensor, numericalizer))
+        TextClassificationDataset(
+            raw_data[item], vocab, (label_transform, text_transform)
+        )
         for item in data_select
     )
 
