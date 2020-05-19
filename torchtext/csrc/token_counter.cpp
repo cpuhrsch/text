@@ -5,12 +5,6 @@
 #include <thread>
 
 using namespace torch::jit;
-// namespace torchtext {
-// 
-// 
-// static auto registry =
-//     torch::RegisterOperators().op("torchtext::count_tokens", &count_tokens);
-// }
 
 void process(
     StrongFunctionPtr sfn,
@@ -35,10 +29,11 @@ void process(
     }
   }
 }
+
 std::unordered_map<std::string, int64_t>
 count_tokens(py::object fn, const std::vector<std::string> &tokens) {
   if (!py::isinstance<StrongFunctionPtr>(fn)) {
-    throw std::runtime_error("asdf");
+    throw std::runtime_error("Given object is not a JIT function.");
   }
 
   auto sfn = py::cast<StrongFunctionPtr>(fn);
@@ -62,12 +57,8 @@ count_tokens(py::object fn, const std::vector<std::string> &tokens) {
   return counter;
 }
 
-// int add(int i, int j) {
-//     return i + j;
-// }
-
 PYBIND11_MODULE(_torchtext, m) {
-    m.doc() = "pybind11 example plugin"; // optional module docstring
-
-    m.def("add", &count_tokens, "A function which adds two numbers");
+    m.def("count_tokens", &count_tokens,
+          "Apply JIT'd function to a list of strings and count number of "
+          "resulting tokens");
 }
