@@ -31,14 +31,14 @@ void process(
 }
 
 std::unordered_map<std::string, int64_t>
-count_tokens(py::object fn, const std::vector<std::string> &tokens) {
+count_tokens(py::object fn, const std::vector<std::string> &tokens, size_t num_cpus) {
   if (!py::isinstance<StrongFunctionPtr>(fn)) {
     throw std::runtime_error("Given object is not a JIT function.");
   }
 
+  std::unordered_map<std::string, int64_t> counter;
   auto sfn = py::cast<StrongFunctionPtr>(fn);
   std::vector<std::thread> threads;
-  size_t num_cpus = std::thread::hardware_concurrency();
   std::vector<std::unordered_map<std::string, int64_t>> counters(num_cpus);
   size_t chunk_size = tokens.size() / num_cpus;
   auto tokens_ptr = std::make_shared<const std::vector<std::string>>(tokens);
@@ -49,7 +49,6 @@ count_tokens(py::object fn, const std::vector<std::string> &tokens) {
         std::thread(process, sfn, tokens_ptr, counter_ptr, i * chunk_size,
                     std::min(((i + 1) * chunk_size), tokens.size())));
   }
-  std::unordered_map<std::string, int64_t> counter;
   for (size_t i = 0; i < num_cpus; i++) {
     threads[i].join();
     counter.insert(counters[i].begin(), counters[i].end());
