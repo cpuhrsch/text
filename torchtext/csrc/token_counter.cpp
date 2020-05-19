@@ -3,7 +3,16 @@
 #include <unordered_map>
 
 
-namespace torchtext {
+#include <pybind11/pybind11.h>
+
+
+
+// namespace torchtext {
+// 
+// 
+// static auto registry =
+//     torch::RegisterOperators().op("torchtext::count_tokens", &count_tokens);
+// }
 
 std::unordered_map<std::string, int64_t>
 count_tokens(const std::vector<std::string> &tokens) {
@@ -19,6 +28,12 @@ count_tokens(const std::vector<std::string> &tokens) {
   return counter;
 }
 
-static auto registry =
-    torch::RegisterOperators().op("torchtext::count_tokens", &count_tokens);
+// int add(int i, int j) {
+//     return i + j;
+// }
+
+PYBIND11_MODULE(_torchtext, m) {
+    m.doc() = "pybind11 example plugin"; // optional module docstring
+
+    m.def("add", &add, "A function which adds two numbers");
 }
