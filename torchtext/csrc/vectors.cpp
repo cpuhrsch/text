@@ -5,6 +5,9 @@
 #include <string>
 #include <thread>
 #include <torch/script.h>
+#include <double-conversion/double-conversion.h>
+#include <double-conversion/ieee.h>
+#include <double-conversion/utils.h>
 
 // timing
 #include <chrono>
@@ -149,6 +152,9 @@ void _load_tokens_from_file_chunk(
     fin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
   }
 
+  int converter_flags = double_conversion::StringToDoubleConverter::NO_FLAGS;
+  double_conversion::StringToDoubleConverter converter(converter_flags, 0.0f, double_conversion::Single::NaN(), NULL, NULL);
+
   for (int64_t i = start_line; i < start_line + num_lines; i++) {
     vec_float.clear();
 
@@ -161,7 +167,15 @@ void _load_tokens_from_file_chunk(
     // read the vector
     for (int64_t i = 0; i < vector_dim; i++) {
       sstrm >> vec_val;
-      vec_float.push_back(std::stof(vec_val));
+      const char* tmp_str = vec_val.c_str();
+      int processed_characters_count;
+      // bool processed_all;
+      vec_float.push_back(converter.StringToFloat(tmp_str, strlen(tmp_str), 
+            &processed_characters_count));
+      // *processed_all =
+      //         ((strlen(tmp_str) == static_cast<unsigned>(*processed_characters_count)));
+      // TORCH_CHECK(&processed_all, "String wasn't fully processed");
+      // vec_float.push_back(std::stof(vec_val));
     }
 
     if (vector_dim != static_cast<int64_t>(vec_float.size())) {
