@@ -1,3 +1,6 @@
+#include <double-conversion/double-conversion.h>
+#include <double-conversion/ieee.h>
+#include <double-conversion/utils.h>
 #include <future>
 #include <iostream>
 #include <sstream>
@@ -5,9 +8,6 @@
 #include <string>
 #include <thread>
 #include <torch/script.h>
-#include <double-conversion/double-conversion.h>
-#include <double-conversion/ieee.h>
-#include <double-conversion/utils.h>
 
 // timing
 #include <chrono>
@@ -19,32 +19,31 @@ using c10::Dict;
 namespace torchtext {
 namespace {
 
-typedef std::tuple<std::vector<std::string>, torch::Tensor,
-                   std::vector<std::string>>
+typedef std::tuple<Dict<std::string, torch::Tensor>, std::vector<std::string>>
     LoadedVectorsTuple;
 
-typedef std::tuple<std::vector<std::string>, std::vector<std::vector<float>>,
-                   std::vector<std::string>>
+typedef std::tuple<Dict<std::string, torch::Tensor>, std::vector<std::string>>
     LoadedChunkVectorsTuple;
 
 struct Vectors : torch::CustomClassHolder {
 public:
   Dict<std::string, torch::Tensor> stovec_;
-  std::vector<std::string> tokens_;
-  torch::Tensor vectors_;
   torch::Tensor unk_tensor_;
+
+  explicit Vectors(const Dict<std::string, torch::Tensor> &stovec,
+                   const torch::Tensor &unk_tensor)
+      : stovec_(stovec), unk_tensor_(unk_tensor) {}
 
   explicit Vectors(const std::vector<std::string> &tokens,
                    const torch::Tensor &vectors,
                    const torch::Tensor &unk_tensor)
-      : tokens_(std::move(tokens)), vectors_(std::move(vectors)),
-        unk_tensor_(std::move(unk_tensor)) {
+      : unk_tensor_(std::move(unk_tensor)) {
     // guarding against size mismatch of vectors and tokens
     if (static_cast<int>(tokens.size()) != vectors.size(0)) {
       throw std::runtime_error(
           "Mismatching sizes for tokens and vectors. Size of tokens: " +
-          std::to_string(tokens.size()) + ", size of vectors: " +
-          std::to_string(vectors.size(0)) + ".");
+          std::to_string(tokens.size()) +
+          ", size of vectors: " + std::to_string(vectors.size(0)) + ".");
     }
 
     stovec_.reserve(tokens.size());
@@ -54,7 +53,7 @@ public:
         throw std::runtime_error("Duplicate token found in tokens list: " +
                                  tokens[i]);
       }
-      stovec_.insert(std::move(tokens[i]), vectors_.select(0, i));
+      stovec_.insert(std::move(tokens[i]), vectors.select(0, i));
     }
   }
 
@@ -80,10 +79,7 @@ public:
     if (item != stovec_.end()) {
       item->value() = vector;
     } else {
-      tokens_.push_back(token);
-      vectors_ = torch::cat({vectors_, torch::unsqueeze(vector, /*dim=*/0)},
-                            /*dim=*/0);
-      stovec_.insert_or_assign(token, vectors_.select(0, stovec_.size()));
+      stovec_.insert_or_assign(token, vector);
     }
   }
 
@@ -136,16 +132,11 @@ void _load_tokens_from_file_chunk(
   std::ifstream fin;
   fin.open(file_path, std::ios::in);
 
-  std::vector<std::string> tokens;
-  std::vector<std::vector<float>> vectors;
-  std::vector<float> vec_float;
+  // TODO: Instead of using Dict, could just use Vectors class
+  Dict<std::string, torch::Tensor> stovec;
   std::vector<std::string> dup_tokens;
-  std::unordered_set<std::string> tokens_set;
-  std::string line, token, vec_val;
-  int64_t num_vecs_loaded = 0;
 
-  tokens.reserve(num_lines);
-  vectors.reserve(num_lines);
+  int64_t num_vecs_loaded = 0;
 
   // get to line we care about
   for (int64_t i = 0; i < start_line; i++) {
@@ -153,10 +144,12 @@ void _load_tokens_from_file_chunk(
   }
 
   int converter_flags = double_conversion::StringToDoubleConverter::NO_FLAGS;
-  double_conversion::StringToDoubleConverter converter(converter_flags, 0.0f, double_conversion::Single::NaN(), NULL, NULL);
+  double_conversion::StringToDoubleConverter converter(
+      converter_flags, 0.0f, double_conversion::Single::NaN(), NULL, NULL);
 
   for (int64_t i = start_line; i < start_line + num_lines; i++) {
-    vec_float.clear();
+    std::string token, vec_val, line;
+    std::vector<float> vec_float;
 
     std::getline(fin, line);
     std::istringstream sstrm(std::move(line));
@@ -167,96 +160,69 @@ void _load_tokens_from_file_chunk(
     // read the vector
     for (int64_t i = 0; i < vector_dim; i++) {
       sstrm >> vec_val;
-      const char* tmp_str = vec_val.c_str();
+      const char *tmp_str = vec_val.c_str();
       int processed_characters_count;
-      // bool processed_all;
-      vec_float.push_back(converter.StringToFloat(tmp_str, strlen(tmp_str), 
-            &processed_characters_count));
-      // *processed_all =
-      //         ((strlen(tmp_str) == static_cast<unsigned>(*processed_characters_count)));
-      // TORCH_CHECK(&processed_all, "String wasn't fully processed");
-      // vec_float.push_back(std::stof(vec_val));
+      vec_float.push_back(converter.StringToFloat(tmp_str, strlen(tmp_str),
+                                                  &processed_characters_count));
+      // TODO: Check character count?
     }
 
-    if (vector_dim != static_cast<int64_t>(vec_float.size())) {
-      throw std::runtime_error(
-          "Vector for token " + token + " has " +
-          std::to_string(vec_float.size()) +
-          " but previously read vectors have " + std::to_string(vector_dim) +
-          " dimensions. All vectors must have the same number of dimensions.");
-    }
+    TORCH_CHECK(vector_dim == static_cast<int64_t>(vec_float.size()),
+                "Vector for token " + token + " has " +
+                    std::to_string(vec_float.size()) +
+                    " but previously read vectors have " +
+                    std::to_string(vector_dim) +
+                    " dimensions. All vectors must have "
+                    "the same number of dimensions.");
 
-    if (tokens_set.find(token) != tokens_set.end()) {
+    if (stovec.find(token) != stovec.end()) {
       dup_tokens.push_back(token);
       continue;
     }
-
-    tokens_set.insert(token);
-    tokens.push_back(token);
-    vectors.push_back(std::move(vec_float));
+    stovec.insert(std::move(token), torch::tensor(vec_float));
     num_vecs_loaded++;
   }
-  promise.set_value(std::make_tuple(tokens, vectors, dup_tokens));
+  promise.set_value(std::make_tuple(stovec, dup_tokens));
 }
 
 void _concat_loaded_vectors_tuples(std::vector<LoadedChunkVectorsTuple> &tuples,
                                    const int64_t num_lines,
                                    const int64_t vector_dim,
                                    LoadedVectorsTuple *out_tuple) {
-  std::vector<std::string> tokens;
-  std::vector<float> vectors_float;
-  torch::Tensor vectors;
-  std::vector<std::string> dup_tokens;
-  std::unordered_set<std::string> tokens_set;
-
-  tokens.reserve(num_lines);
-  vectors_float.reserve(num_lines);
-  tokens_set.reserve(num_lines);
+  // TODO: Improve error message.
+  TORCH_CHECK(tuples.size() > 0, "Must be at least 1 chunk!");
+  auto &&tokens = std::move(std::get<0>(tuples[0]));
+  auto &&dup_tokens = std::move(std::get<1>(tuples[0]));
 
   // concat all loaded tuples
-  for (size_t i = 0; i < tuples.size(); i++) {
+  for (size_t i = 1; i < tuples.size(); i++) {
     auto &&subset_tokens = std::move(std::get<0>(tuples[i]));
-    auto &&subset_vectors = std::move(std::get<1>(tuples[i]));
-    auto &&subset_dup_tokens = std::move(std::get<2>(tuples[i]));
+    auto &&subset_dup_tokens = std::move(std::get<1>(tuples[i]));
     int64_t num_subset_vecs_loaded = 0;
 
     // efficient dup tokens concatenation
     std::move(subset_dup_tokens.begin(), subset_dup_tokens.end(),
               std::back_inserter(dup_tokens));
 
-    // finding dup tokens
-    for (size_t j = 0; j < subset_tokens.size(); j++) {
-      if (tokens_set.find(subset_tokens[j]) != tokens_set.end()) {
-        dup_tokens.push_back(subset_tokens[j]);
-        // remove the dup token and vec
-        subset_tokens.erase(subset_tokens.begin() + num_subset_vecs_loaded);
-        subset_vectors.erase(subset_vectors.begin() + num_subset_vecs_loaded);
-        continue;
+    for (const auto &element : subset_tokens) {
+      if (tokens.contains(element.key())) {
+        // TODO: This can yield duplicates within the duplicates
+        // Do we want a set instead?
+        dup_tokens.push_back(element.key());
       }
-      tokens_set.insert(subset_tokens[j]);
+      tokens.insert(element.key(), element.value());
       num_subset_vecs_loaded++;
-    }
-
-    // efficient tokens concatenation
-    std::move(subset_tokens.begin(), subset_tokens.end(),
-              std::back_inserter(tokens));
-
-    // efficient vectors concatenation
-    for (auto &subset_vector : subset_vectors) {
-      std::move(subset_vector.begin(), subset_vector.end(),
-                std::back_inserter(vectors_float));
     }
   }
   // construct the vectors tensor
-  vectors = torch::tensor(vectors_float).reshape({-1, vector_dim});
-  *out_tuple = std::make_tuple(std::move(tokens), std::move(vectors),
-                               std::move(dup_tokens));
+  *out_tuple = std::make_tuple(std::move(tokens), std::move(dup_tokens));
 }
 
-LoadedVectorsTuple
+std::tuple<c10::intrusive_ptr<Vectors>, std::vector<std::string>>
 _load_token_and_vectors_from_file(const std::string &file_path,
-                                  const int64_t delimiter_ascii = 32,
-                                  int64_t num_cpus = 10) {
+                                  const int64_t delimiter_ascii,
+                                  int64_t num_cpus,
+                                  c10::optional<torch::Tensor> opt_unk_tensor) {
   std::cerr << "[INFO] Reading file " << file_path << std::endl;
 
   std::tuple<int64_t, int64_t, int64_t> num_lines_headers_vector_dim_tuple =
@@ -309,13 +275,18 @@ _load_token_and_vectors_from_file(const std::string &file_path,
   LoadedVectorsTuple out_tuple;
   _concat_loaded_vectors_tuples(tuples, num_lines, vector_dim, &out_tuple);
 
-  return out_tuple;
-}
-
-// Registers our custom op with torch.
-TORCH_LIBRARY(torchtext, m) {
-  m.def("_load_token_and_vectors_from_file",
-        &_load_token_and_vectors_from_file);
+  auto tmp_tokens = std::get<0>(out_tuple);
+  auto dup_tokens = std::get<1>(out_tuple);
+  torch::Tensor unk_tensor;
+  if (opt_unk_tensor) {
+    unk_tensor = *opt_unk_tensor;
+  } else {
+    unk_tensor = torch::zeros({vector_dim});
+  }
+  return std::make_tuple(
+      c10::make_intrusive<Vectors>(Vectors(tmp_tokens, unk_tensor)),
+      dup_tokens);
+  // return out_tuple;
 }
 
 // Registers our custom class with torch.
@@ -329,10 +300,18 @@ static auto vectors =
         .def("__len__", &Vectors::__len__)
         .def_pickle(
             // __setstate__
-            [](const c10::intrusive_ptr<Vectors> &self) -> std::tuple<
-                std::vector<std::string>, torch::Tensor, torch::Tensor> {
+            [](const c10::intrusive_ptr<Vectors> &self)
+                -> std::tuple<std::vector<std::string>, torch::Tensor,
+                              torch::Tensor> {
+              std::vector<std::string> tokens;
+              std::vector<at::Tensor> vectors;
+              for (const auto &element : self->stovec_) {
+                tokens.push_back(element.key());
+                vectors.push_back(element.value());
+              }
               std::tuple<std::vector<std::string>, torch::Tensor, torch::Tensor>
-                  states(self->tokens_, self->vectors_, self->unk_tensor_);
+                  states(tokens, at::stack(at::TensorList(vectors)),
+                         self->unk_tensor_);
               return states;
             },
             // __getstate__
@@ -344,6 +323,12 @@ static auto vectors =
                   std::move(std::get<1>(states)),
                   std::move(std::get<2>(states)));
             });
+
+// Registers our custom op with torch.
+TORCH_LIBRARY(torchtext, m) {
+  m.def("_load_token_and_vectors_from_file",
+        &_load_token_and_vectors_from_file);
+}
 
 } // namespace
 } // namespace torchtext
