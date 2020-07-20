@@ -171,10 +171,10 @@ concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
   std::vector<at::Tensor> vectors = data_tensor.unbind(0);
   auto end = std::chrono::steady_clock::now();
   std::chrono::duration<double> elapsed_seconds = end - start;
-  std::cout << "unbind elapsed time: " << elapsed_seconds.count() << "s\n";
+  std::cout << "\tunbind elapsed time: " << elapsed_seconds.count() << "s\n";
   StringList dup_tokens;
-  //  auto &dup_tokens = *chunk_dup_tokens[0];
 
+  start = std::chrono::steady_clock::now();
   // concat all loaded tuples
   int64_t count = num_header_lines;
   for (size_t i = 0; i < chunk_tokens.size(); i++) {
@@ -188,6 +188,10 @@ concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
       count++;
     }
   }
+  end = std::chrono::steady_clock::now();
+  elapsed_seconds = end - start;
+  std::cout << "\tinsert and dup elapsed time: " << elapsed_seconds.count()
+            << "s\n";
   return std::make_tuple(tokens, dup_tokens);
 }
 

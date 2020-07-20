@@ -32,7 +32,7 @@ def benchmark_experimental_vectors():
     # experimental FastText construction
     print("FastText Experimental")
     t0 = time.monotonic()
-    fast_text_experimental = FastTextExperimental(validate_file=False, num_cpus=32)
+    fast_text_experimental = FastTextExperimental(validate_file=False)
     print("Construction time:", time.monotonic() - t0)
 
     # # not jit lookup
