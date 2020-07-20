@@ -19,30 +19,30 @@ def benchmark_experimental_vectors():
     for (label, text) in train:
         for id in text.tolist():
             tokens.append(vocab.itos[id])
+        if len(tokens) > 100000:
+            break
 
-    # # existing FastText construction
-    # print("Existing FastText - Not Jit Mode")
-    # t0 = time.monotonic()
-    # fast_text = FastText()
-    # print("Construction time:", time.monotonic() - t0)
-    # _run_benchmark_lookup(tokens, fast_text)
+    # existing FastText construction
+    print("Existing FastText - Not Jit Mode")
+    t0 = time.monotonic()
+    fast_text = FastText()
+    print("Construction time:", time.monotonic() - t0)
+    _run_benchmark_lookup(tokens, fast_text)
 
     # experimental FastText construction
     print("FastText Experimental")
-    # for num_cpus in [1, 2, 4, 8, 16, 32, 40]:
-    for num_cpus in [8, 16, 32, 40]:
-        t0 = time.monotonic()
-        fast_text_experimental = FastTextExperimental(validate_file=False, num_cpus=num_cpus)
-        print("Construction time:", time.monotonic() - t0, " - num_cpus: ", num_cpus)
+    t0 = time.monotonic()
+    fast_text_experimental = FastTextExperimental(validate_file=False)
+    print("Construction time:", time.monotonic() - t0)
 
-    # # not jit lookup
-    # print("FastText Experimental - Not Jit Mode")
-    # _run_benchmark_lookup(tokens, fast_text_experimental)
+    # not jit lookup
+    print("FastText Experimental - Not Jit Mode")
+    _run_benchmark_lookup(tokens, fast_text_experimental)
 
-    # # jit lookup
-    # print("FastText Experimental - Jit Mode")
-    # jit_fast_text_experimental = torch.jit.script(fast_text_experimental)
-    # _run_benchmark_lookup(tokens, jit_fast_text_experimental)
+    # jit lookup
+    print("FastText Experimental - Jit Mode")
+    jit_fast_text_experimental = torch.jit.script(fast_text_experimental)
+    _run_benchmark_lookup(tokens, jit_fast_text_experimental)
 
 
 if __name__ == "__main__":
