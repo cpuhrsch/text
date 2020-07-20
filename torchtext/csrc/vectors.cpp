@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 #include <torch/script.h>
+#include <vectors_parse_chunk.h>
 
 // timing
 #include <chrono>
@@ -138,7 +139,7 @@ _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
   return std::make_tuple(num_lines, num_header_lines, vector_dim);
 }
 
-void parse_chunk(const std::string &file_path, const int64_t start_line,
+void cpp_parse_chunk(const std::string &file_path, const int64_t start_line,
                  const int64_t end_line, const int64_t vector_dim,
                  const int64_t delimiter_ascii,
                  std::shared_ptr<StringList> tokens, float *data_ptr) {
