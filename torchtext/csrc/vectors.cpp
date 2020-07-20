@@ -25,17 +25,19 @@ typedef std::vector<std::string> StringList;
 
 struct Vectors : torch::CustomClassHolder {
 public:
-  Dict<std::string, torch::Tensor> stovec_;
+  Dict<std::string, int64_t> stoindex_;
+  VectorsDict stovec_;
+  torch::Tensor vectors_;
   torch::Tensor unk_tensor_;
 
-  explicit Vectors(const Dict<std::string, torch::Tensor> &stovec,
-                   const torch::Tensor &unk_tensor)
-      : stovec_(stovec), unk_tensor_(unk_tensor) {}
+  explicit Vectors(const Dict<std::string, int64_t> &stoindex,
+                   const torch::Tensor vectors, const torch::Tensor &unk_tensor)
+      : stoindex_(stoindex), vectors_(vectors), unk_tensor_(unk_tensor) {}
 
   explicit Vectors(const std::vector<std::string> &tokens,
                    const torch::Tensor &vectors,
                    const torch::Tensor &unk_tensor)
-      : unk_tensor_(std::move(unk_tensor)) {
+      : vectors_(vectors), unk_tensor_(std::move(unk_tensor)) {
     // guarding against size mismatch of vectors and tokens
     if (static_cast<int>(tokens.size()) != vectors.size(0)) {
       throw std::runtime_error(
@@ -44,14 +46,14 @@ public:
           ", size of vectors: " + std::to_string(vectors.size(0)) + ".");
     }
 
-    stovec_.reserve(tokens.size());
+    stoindex_.reserve(tokens.size());
     for (std::size_t i = 0; i < tokens.size(); i++) {
       // tokens should not have any duplicates
-      if (stovec_.find(tokens[i]) != stovec_.end()) {
+      if (stoindex_.contains(tokens[i])) {
         throw std::runtime_error("Duplicate token found in tokens list: " +
                                  tokens[i]);
       }
-      stovec_.insert(std::move(tokens[i]), vectors.select(0, i));
+      stoindex_.insert(std::move(tokens[i]), i);
     }
   }
 
@@ -59,6 +61,12 @@ public:
     const auto &item = stovec_.find(token);
     if (item != stovec_.end()) {
       return item->value();
+    }
+    const auto &item_index = stoindex_.find(token);
+    if (item_index != stoindex_.end()) {
+      auto vector = vectors_[item_index->value()];
+      stovec_.insert(token, vector);
+      return vector;
     }
     return unk_tensor_;
   }
@@ -77,7 +85,12 @@ public:
     if (item != stovec_.end()) {
       item->value() = vector;
     } else {
+      stoindex_.insert_or_assign(token, vector.size(0));
       stovec_.insert_or_assign(token, vector);
+      // TODO: This could be done lazily during serialization (if necessary).
+      // We would cycle through the vectors and concatenate those that aren't
+      // views.
+      vectors_ = at::cat({vectors_, vector.unsqueeze(0)});
     }
   }
 
@@ -161,37 +174,27 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
   }
 }
 
-std::tuple<VectorsDict, StringList>
+std::tuple<Dict<std::string, int64_t>, StringList>
 concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
                torch::Tensor data_tensor, int64_t num_header_lines) {
   // TODO: Improve error message.
   TORCH_CHECK(chunk_tokens.size() > 0, "Must be at least 1 chunk!");
-  VectorsDict tokens;
-  auto start = std::chrono::steady_clock::now();
-  std::vector<at::Tensor> vectors = data_tensor.unbind(0);
-  auto end = std::chrono::steady_clock::now();
-  std::chrono::duration<double> elapsed_seconds = end - start;
-  std::cout << "\tunbind elapsed time: " << elapsed_seconds.count() << "s\n";
+  Dict<std::string, int64_t> tokens;
   StringList dup_tokens;
 
-  start = std::chrono::steady_clock::now();
   // concat all loaded tuples
   int64_t count = num_header_lines;
   for (size_t i = 0; i < chunk_tokens.size(); i++) {
     auto &subset_tokens = *chunk_tokens[i];
     for (size_t j = 0; j < subset_tokens.size(); j++) {
       if (tokens.contains(subset_tokens[j])) {
-        dup_tokens.push_back(subset_tokens[j]);
+        dup_tokens.emplace_back(std::move(subset_tokens[j]));
       } else {
-        tokens.insert(subset_tokens[j], vectors[count]);
+        tokens.insert(std::move(subset_tokens[j]), count);
       }
       count++;
     }
   }
-  end = std::chrono::steady_clock::now();
-  elapsed_seconds = end - start;
-  std::cout << "\tinsert and dup elapsed time: " << elapsed_seconds.count()
-            << "s\n";
   return std::make_tuple(tokens, dup_tokens);
 }
 
@@ -244,7 +247,8 @@ _load_token_and_vectors_from_file(const std::string &file_path,
   std::cout << "threads elapsed time: " << elapsed_seconds.count() << "s\n";
 
   start = std::chrono::steady_clock::now();
-  VectorsDict dict;
+  Dict<std::string, int64_t> dict;
+  dict.reserve(num_lines);
   StringList dup_tokens;
   std::tie(dict, dup_tokens) =
       concat_vectors(chunk_tokens, data_tensor, num_header_lines);
@@ -261,7 +265,8 @@ _load_token_and_vectors_from_file(const std::string &file_path,
     unk_tensor = torch::zeros({vector_dim});
   }
   auto result = std::make_tuple(
-      c10::make_intrusive<Vectors>(Vectors(dict, unk_tensor)), dup_tokens);
+      c10::make_intrusive<Vectors>(Vectors(dict, data_tensor, unk_tensor)),
+      dup_tokens);
   end = std::chrono::steady_clock::now();
   elapsed_seconds = end - start;
   std::cout << "result elapsed time: " << elapsed_seconds.count() << "s\n";
@@ -280,21 +285,13 @@ static auto vectors =
         .def_pickle(
             // __setstate__
             [](const c10::intrusive_ptr<Vectors> &self)
-                -> std::tuple<std::vector<std::string>, torch::Tensor,
+                -> std::tuple<Dict<std::string, int64_t>, torch::Tensor,
                               torch::Tensor> {
-              std::vector<std::string> tokens;
-              std::vector<at::Tensor> vectors;
-              for (const auto &element : self->stovec_) {
-                tokens.push_back(element.key());
-                vectors.push_back(element.value());
-              }
-              std::tuple<std::vector<std::string>, torch::Tensor, torch::Tensor>
-                  states(tokens, at::stack(at::TensorList(vectors)),
-                         self->unk_tensor_);
-              return states;
+              return std::make_tuple(self->stoindex_, self->vectors_,
+                                     self->unk_tensor_);
             },
             // __getstate__
-            [](std::tuple<std::vector<std::string>, torch::Tensor,
+            [](std::tuple<Dict<std::string, int64_t>, torch::Tensor,
                           torch::Tensor>
                    states) -> c10::intrusive_ptr<Vectors> {
               return c10::make_intrusive<Vectors>(
