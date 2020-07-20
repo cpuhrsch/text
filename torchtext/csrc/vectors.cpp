@@ -201,7 +201,7 @@ concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
   return std::make_tuple(tokens, dup_tokens);
 }
 
-constexpr int64_t GRAIN_SIZE = 32768;
+constexpr int64_t GRAIN_SIZE = 131072;
 std::tuple<c10::intrusive_ptr<Vectors>, std::vector<std::string>>
 _load_token_and_vectors_from_file(const std::string &file_path,
                                   const int64_t delimiter_ascii,
