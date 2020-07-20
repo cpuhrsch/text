@@ -21,17 +21,18 @@ namespace {
 
 // TODO: Instead of using Dict, could just use Vectors class
 typedef Dict<std::string, torch::Tensor> VectorsDict;
+typedef Dict<std::string, int64_t> IndexDict;
 typedef std::vector<std::string> StringList;
 
 struct Vectors : torch::CustomClassHolder {
 public:
-  Dict<std::string, int64_t> stoindex_;
+  IndexDict stoindex_;
   VectorsDict stovec_;
   torch::Tensor vectors_;
   torch::Tensor unk_tensor_;
 
-  explicit Vectors(const Dict<std::string, int64_t> &stoindex,
-                   const torch::Tensor vectors, const torch::Tensor &unk_tensor)
+  explicit Vectors(const IndexDict &stoindex, const torch::Tensor vectors,
+                   const torch::Tensor &unk_tensor)
       : stoindex_(stoindex), vectors_(vectors), unk_tensor_(unk_tensor) {}
 
   explicit Vectors(const std::vector<std::string> &tokens,
@@ -174,13 +175,15 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
   }
 }
 
-std::tuple<Dict<std::string, int64_t>, StringList>
+std::tuple<IndexDict, StringList>
 concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
-               torch::Tensor data_tensor, int64_t num_header_lines) {
+               torch::Tensor data_tensor, int64_t num_header_lines,
+               int64_t num_lines) {
   // TODO: Improve error message.
   TORCH_CHECK(chunk_tokens.size() > 0, "Must be at least 1 chunk!");
-  Dict<std::string, int64_t> tokens;
+  IndexDict tokens;
   StringList dup_tokens;
+  tokens.reserve(num_lines);
 
   // concat all loaded tuples
   int64_t count = num_header_lines;
@@ -247,11 +250,10 @@ _load_token_and_vectors_from_file(const std::string &file_path,
   std::cout << "threads elapsed time: " << elapsed_seconds.count() << "s\n";
 
   start = std::chrono::steady_clock::now();
-  Dict<std::string, int64_t> dict;
-  dict.reserve(num_lines);
+  IndexDict dict;
   StringList dup_tokens;
   std::tie(dict, dup_tokens) =
-      concat_vectors(chunk_tokens, data_tensor, num_header_lines);
+      concat_vectors(chunk_tokens, data_tensor, num_header_lines, num_lines);
   end = std::chrono::steady_clock::now();
   elapsed_seconds = end - start;
   std::cout << "concat_vectors elapsed time: " << elapsed_seconds.count()
