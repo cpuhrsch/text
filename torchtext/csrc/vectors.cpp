@@ -19,11 +19,9 @@ using c10::Dict;
 namespace torchtext {
 namespace {
 
-typedef std::tuple<Dict<std::string, torch::Tensor>, std::vector<std::string>>
-    LoadedVectorsTuple;
-
-typedef std::tuple<Dict<std::string, torch::Tensor>, std::vector<std::string>>
-    LoadedChunkVectorsTuple;
+// TODO: Instead of using Dict, could just use Vectors class
+typedef Dict<std::string, torch::Tensor> VectorsDict;
+typedef std::vector<std::string> StringList;
 
 struct Vectors : torch::CustomClassHolder {
 public:
@@ -126,17 +124,13 @@ _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
   return std::make_tuple(num_lines, num_header_lines, vector_dim);
 }
 
-void _load_tokens_from_file_chunk(
-    const std::string &file_path, const int64_t start_line,
-    const int64_t end_line, const int64_t vector_dim,
-    const int64_t delimiter_ascii,
-    std::promise<LoadedChunkVectorsTuple> &&promise) {
+void parse_chunk(const std::string &file_path, const int64_t start_line,
+                 const int64_t end_line, const int64_t vector_dim,
+                 const int64_t delimiter_ascii,
+                 std::shared_ptr<Dict<std::string, torch::Tensor>> stovec,
+                 std::shared_ptr<std::vector<std::string>> dup_tokens) {
   std::ifstream fin;
   fin.open(file_path, std::ios::in);
-
-  // TODO: Instead of using Dict, could just use Vectors class
-  Dict<std::string, torch::Tensor> stovec;
-  std::vector<std::string> dup_tokens;
 
   // get to line we care about
   for (int64_t i = 0; i < start_line; i++) {
@@ -174,29 +168,28 @@ void _load_tokens_from_file_chunk(
                     " dimensions. All vectors must have "
                     "the same number of dimensions.");
 
-    if (stovec.contains(token)) {
-      dup_tokens.push_back(token);
+    if (stovec->contains(token)) {
+      dup_tokens->push_back(token);
     } else {
-      stovec.insert(std::move(token), torch::tensor(vec_float));
+      stovec->insert(std::move(token), torch::tensor(vec_float));
     }
   }
-  promise.set_value(std::make_tuple(stovec, dup_tokens));
 }
 
-void _concat_loaded_vectors_tuples(std::vector<LoadedChunkVectorsTuple> &tuples,
-                                   const int64_t num_lines,
-                                   const int64_t vector_dim,
-                                   LoadedVectorsTuple *out_tuple) {
+void concat_vectors(std::vector<std::shared_ptr<VectorsDict>> chunk_tokens,
+                    std::vector<std::shared_ptr<StringList>> chunk_dup_tokens,
+                    const int64_t num_lines, const int64_t vector_dim) {
   // TODO: Improve error message.
-  TORCH_CHECK(tuples.size() > 0, "Must be at least 1 chunk!");
-  auto &&tokens = std::move(std::get<0>(tuples[0]));
-  auto &&dup_tokens = std::move(std::get<1>(tuples[0]));
+  TORCH_CHECK(chunk_tokens.size() > 0, "Must be at least 1 chunk!");
+  TORCH_CHECK(chunk_tokens.size() == chunk_dup_tokens.size(),
+              "tokens and dup_tokens vectors size must match!");
+  auto &tokens = *chunk_tokens[0];
+  auto &dup_tokens = *chunk_dup_tokens[0];
 
   // concat all loaded tuples
-  for (size_t i = 1; i < tuples.size(); i++) {
-    auto &&subset_tokens = std::move(std::get<0>(tuples[i]));
-    auto &&subset_dup_tokens = std::move(std::get<1>(tuples[i]));
-    int64_t num_subset_vecs_loaded = 0;
+  for (size_t i = 1; i < chunk_tokens.size(); i++) {
+    auto &subset_tokens = *chunk_tokens[i];
+    auto &subset_dup_tokens = *chunk_dup_tokens[i];
 
     // efficient dup tokens concatenation
     std::move(subset_dup_tokens.begin(), subset_dup_tokens.end(),
@@ -209,11 +202,8 @@ void _concat_loaded_vectors_tuples(std::vector<LoadedChunkVectorsTuple> &tuples,
         dup_tokens.push_back(element.key());
       }
       tokens.insert(element.key(), element.value());
-      num_subset_vecs_loaded++;
     }
   }
-  // construct the vectors tensor
-  *out_tuple = std::make_tuple(std::move(tokens), std::move(dup_tokens));
 }
 
 constexpr int64_t GRAIN_SIZE = 32768;
@@ -232,36 +222,28 @@ _load_token_and_vectors_from_file(const std::string &file_path,
   // Launching a thread on less lines than this likely has too much overhead.
   chunk_size = std::max(chunk_size, GRAIN_SIZE);
 
-  std::vector<std::future<LoadedChunkVectorsTuple>> futures;
   std::vector<std::thread> threads;
-  std::vector<LoadedChunkVectorsTuple> tuples;
+  std::vector<std::shared_ptr<VectorsDict>> chunk_tokens;
+  std::vector<std::shared_ptr<StringList>> chunk_dup_tokens;
 
   // create threads
   for (int64_t i = num_header_lines; i < num_lines; i += chunk_size) {
-    std::promise<LoadedChunkVectorsTuple> p;
-    std::future<LoadedChunkVectorsTuple> f = p.get_future();
-    futures.push_back(std::move(f));
-
-    threads.push_back(std::thread(_load_tokens_from_file_chunk, file_path, i,
-                                  std::min(num_lines, i + chunk_size),
-                                  vector_dim, delimiter_ascii, std::move(p)));
+    auto tokens_ptr = std::make_shared<VectorsDict>();
+    auto dup_tokens_ptr = std::make_shared<StringList>();
+    threads.push_back(std::thread(
+        parse_chunk, file_path, i, std::min(num_lines, i + chunk_size),
+        vector_dim, delimiter_ascii, tokens_ptr, dup_tokens_ptr));
+    chunk_tokens.push_back(tokens_ptr);
+    chunk_dup_tokens.push_back(dup_tokens_ptr);
   }
 
   // join threads
-  for (auto& thread : threads) {
+  for (auto &thread : threads) {
     thread.join();
   }
 
-  // get all loaded tuples
-  for (auto& future : futures) {
-    tuples.push_back(std::move(future.get()));
-  }
+  concat_vectors(chunk_tokens, chunk_dup_tokens, num_lines, vector_dim);
 
-  LoadedVectorsTuple out_tuple;
-  _concat_loaded_vectors_tuples(tuples, num_lines, vector_dim, &out_tuple);
-
-  auto tmp_tokens = std::get<0>(out_tuple);
-  auto dup_tokens = std::get<1>(out_tuple);
   torch::Tensor unk_tensor;
   if (opt_unk_tensor) {
     unk_tensor = *opt_unk_tensor;
@@ -269,8 +251,8 @@ _load_token_and_vectors_from_file(const std::string &file_path,
     unk_tensor = torch::zeros({vector_dim});
   }
   return std::make_tuple(
-      c10::make_intrusive<Vectors>(Vectors(tmp_tokens, unk_tensor)),
-      dup_tokens);
+      c10::make_intrusive<Vectors>(Vectors(*chunk_tokens[0], unk_tensor)),
+      *chunk_dup_tokens[0]);
   // return out_tuple;
 }
 
