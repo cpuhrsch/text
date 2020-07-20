@@ -127,8 +127,7 @@ _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
 void parse_chunk(const std::string &file_path, const int64_t start_line,
                  const int64_t end_line, const int64_t vector_dim,
                  const int64_t delimiter_ascii,
-                 std::shared_ptr<Dict<std::string, torch::Tensor>> stovec,
-                 std::shared_ptr<std::vector<std::string>> dup_tokens) {
+                 std::shared_ptr<StringList> tokens, float *data_ptr) {
   std::ifstream fin;
   fin.open(file_path, std::ios::in);
 
@@ -145,65 +144,51 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
     std::string token;
     // read the token
     std::getline(fin, token, static_cast<char>(delimiter_ascii));
+    tokens->push_back(token);
 
     std::string vec_val;
-    std::vector<float> vec_float(vector_dim);
     // read the vector
-    for (int64_t i = 0; i < vector_dim; i++) {
+    for (int64_t j = 0; j < vector_dim; j++) {
       fin >> vec_val;
       const char *tmp_str = vec_val.c_str();
       int processed_characters_count;
-      vec_float[i] = converter.StringToFloat(tmp_str, strlen(tmp_str),
-                                             &processed_characters_count);
-      // TODO: Check character count?
+      data_ptr[i * vector_dim + j] = converter.StringToFloat(
+          tmp_str, strlen(tmp_str), &processed_characters_count);
+      // TODO: Check character count? Use character count to forward file
+      // descriptor?
     }
-    // Shed trailing whitespace to consume next line
     fin >> std::ws;
-
-    TORCH_CHECK(vector_dim == static_cast<int64_t>(vec_float.size()),
-                "Vector for token " + token + " has " +
-                    std::to_string(vec_float.size()) +
-                    " but previously read vectors have " +
-                    std::to_string(vector_dim) +
-                    " dimensions. All vectors must have "
-                    "the same number of dimensions.");
-
-    if (stovec->contains(token)) {
-      dup_tokens->push_back(token);
-    } else {
-      stovec->insert(std::move(token), torch::tensor(vec_float));
-    }
   }
 }
 
-void concat_vectors(std::vector<std::shared_ptr<VectorsDict>> chunk_tokens,
-                    std::vector<std::shared_ptr<StringList>> chunk_dup_tokens,
-                    const int64_t num_lines, const int64_t vector_dim) {
+std::tuple<VectorsDict, StringList>
+concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
+               torch::Tensor data_tensor, int64_t num_header_lines) {
   // TODO: Improve error message.
   TORCH_CHECK(chunk_tokens.size() > 0, "Must be at least 1 chunk!");
-  TORCH_CHECK(chunk_tokens.size() == chunk_dup_tokens.size(),
-              "tokens and dup_tokens vectors size must match!");
-  auto &tokens = *chunk_tokens[0];
-  auto &dup_tokens = *chunk_dup_tokens[0];
+  VectorsDict tokens;
+  auto start = std::chrono::steady_clock::now();
+  std::vector<at::Tensor> vectors = data_tensor.unbind(0);
+  auto end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed_seconds = end - start;
+  std::cout << "unbind elapsed time: " << elapsed_seconds.count() << "s\n";
+  StringList dup_tokens;
+  //  auto &dup_tokens = *chunk_dup_tokens[0];
 
   // concat all loaded tuples
-  for (size_t i = 1; i < chunk_tokens.size(); i++) {
+  int64_t count = num_header_lines;
+  for (size_t i = 0; i < chunk_tokens.size(); i++) {
     auto &subset_tokens = *chunk_tokens[i];
-    auto &subset_dup_tokens = *chunk_dup_tokens[i];
-
-    // efficient dup tokens concatenation
-    std::move(subset_dup_tokens.begin(), subset_dup_tokens.end(),
-              std::back_inserter(dup_tokens));
-
-    for (const auto &element : subset_tokens) {
-      if (tokens.contains(element.key())) {
-        // TODO: This can yield duplicates within the duplicates
-        // Do we want a set instead?
-        dup_tokens.push_back(element.key());
+    for (size_t j = 0; j < subset_tokens.size(); j++) {
+      if (tokens.contains(subset_tokens[j])) {
+        dup_tokens.push_back(subset_tokens[j]);
+      } else {
+        tokens.insert(subset_tokens[j], vectors[count]);
       }
-      tokens.insert(element.key(), element.value());
+      count++;
     }
   }
+  return std::make_tuple(tokens, dup_tokens);
 }
 
 constexpr int64_t GRAIN_SIZE = 32768;
@@ -214,46 +199,69 @@ _load_token_and_vectors_from_file(const std::string &file_path,
                                   c10::optional<torch::Tensor> opt_unk_tensor) {
   std::cerr << "[INFO] Reading file " << file_path << std::endl;
 
+  auto start = std::chrono::steady_clock::now();
+
   int64_t num_lines, num_header_lines, vector_dim;
   std::tie(num_lines, num_header_lines, vector_dim) =
       _infer_shape(file_path, delimiter_ascii);
 
+  auto end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed_seconds = end - start;
+  std::cout << "_infer_shape elapsed time: " << elapsed_seconds.count()
+            << "s\n";
+
+  start = std::chrono::steady_clock::now();
   int64_t chunk_size = divup(num_lines, num_cpus);
   // Launching a thread on less lines than this likely has too much overhead.
+  // TODO: Add explicit test beyond grain size to cover multithreading
   chunk_size = std::max(chunk_size, GRAIN_SIZE);
 
+  torch::Tensor data_tensor = torch::empty({num_lines, vector_dim});
+  float *data_ptr = data_tensor.data_ptr<float>();
   std::vector<std::thread> threads;
-  std::vector<std::shared_ptr<VectorsDict>> chunk_tokens;
-  std::vector<std::shared_ptr<StringList>> chunk_dup_tokens;
+  std::vector<std::shared_ptr<StringList>> chunk_tokens;
 
   // create threads
   for (int64_t i = num_header_lines; i < num_lines; i += chunk_size) {
-    auto tokens_ptr = std::make_shared<VectorsDict>();
-    auto dup_tokens_ptr = std::make_shared<StringList>();
+    auto tokens_ptr = std::make_shared<StringList>();
+    // TODO: Replace this with at::launch
     threads.push_back(std::thread(
         parse_chunk, file_path, i, std::min(num_lines, i + chunk_size),
-        vector_dim, delimiter_ascii, tokens_ptr, dup_tokens_ptr));
+        vector_dim, delimiter_ascii, tokens_ptr, data_ptr));
     chunk_tokens.push_back(tokens_ptr);
-    chunk_dup_tokens.push_back(dup_tokens_ptr);
   }
 
   // join threads
   for (auto &thread : threads) {
     thread.join();
   }
+  end = std::chrono::steady_clock::now();
+  elapsed_seconds = end - start;
+  std::cout << "threads elapsed time: " << elapsed_seconds.count() << "s\n";
 
-  concat_vectors(chunk_tokens, chunk_dup_tokens, num_lines, vector_dim);
+  start = std::chrono::steady_clock::now();
+  VectorsDict dict;
+  StringList dup_tokens;
+  std::tie(dict, dup_tokens) =
+      concat_vectors(chunk_tokens, data_tensor, num_header_lines);
+  end = std::chrono::steady_clock::now();
+  elapsed_seconds = end - start;
+  std::cout << "concat_vectors elapsed time: " << elapsed_seconds.count()
+            << "s\n";
 
+  start = std::chrono::steady_clock::now();
   torch::Tensor unk_tensor;
   if (opt_unk_tensor) {
     unk_tensor = *opt_unk_tensor;
   } else {
     unk_tensor = torch::zeros({vector_dim});
   }
-  return std::make_tuple(
-      c10::make_intrusive<Vectors>(Vectors(*chunk_tokens[0], unk_tensor)),
-      *chunk_dup_tokens[0]);
-  // return out_tuple;
+  auto result = std::make_tuple(
+      c10::make_intrusive<Vectors>(Vectors(dict, unk_tensor)), dup_tokens);
+  end = std::chrono::steady_clock::now();
+  elapsed_seconds = end - start;
+  std::cout << "result elapsed time: " << elapsed_seconds.count() << "s\n";
+  return result;
 }
 
 // Registers our custom class with torch.
