@@ -86,6 +86,8 @@ public:
   int64_t __len__() { return stovec_.size(); }
 };
 
+inline int64_t divup(int64_t x, int64_t y) { return (x + y - 1) / y; }
+
 std::tuple<int64_t, int64_t, int64_t>
 _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
 
@@ -126,7 +128,7 @@ _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
 
 void _load_tokens_from_file_chunk(
     const std::string &file_path, const int64_t start_line,
-    const int64_t num_lines, const int64_t vector_dim,
+    const int64_t end_line, const int64_t vector_dim,
     const int64_t delimiter_ascii,
     std::promise<LoadedChunkVectorsTuple> &&promise) {
   std::ifstream fin;
@@ -135,8 +137,6 @@ void _load_tokens_from_file_chunk(
   // TODO: Instead of using Dict, could just use Vectors class
   Dict<std::string, torch::Tensor> stovec;
   std::vector<std::string> dup_tokens;
-
-  int64_t num_vecs_loaded = 0;
 
   // get to line we care about
   for (int64_t i = 0; i < start_line; i++) {
@@ -147,25 +147,24 @@ void _load_tokens_from_file_chunk(
   double_conversion::StringToDoubleConverter converter(
       converter_flags, 0.0f, double_conversion::Single::NaN(), NULL, NULL);
 
-  for (int64_t i = start_line; i < start_line + num_lines; i++) {
-    std::string token, vec_val, line;
-    std::vector<float> vec_float;
-
-    std::getline(fin, line);
-    std::istringstream sstrm(std::move(line));
-
+  for (int64_t i = start_line; i < end_line; i++) {
+    std::string token;
     // read the token
-    std::getline(sstrm, token, static_cast<char>(delimiter_ascii));
+    std::getline(fin, token, static_cast<char>(delimiter_ascii));
 
+    std::string vec_val;
+    std::vector<float> vec_float(vector_dim);
     // read the vector
     for (int64_t i = 0; i < vector_dim; i++) {
-      sstrm >> vec_val;
+      fin >> vec_val;
       const char *tmp_str = vec_val.c_str();
       int processed_characters_count;
-      vec_float.push_back(converter.StringToFloat(tmp_str, strlen(tmp_str),
-                                                  &processed_characters_count));
+      vec_float[i] = converter.StringToFloat(tmp_str, strlen(tmp_str),
+                                             &processed_characters_count);
       // TODO: Check character count?
     }
+    // Shed trailing whitespace to consume next line
+    fin >> std::ws;
 
     TORCH_CHECK(vector_dim == static_cast<int64_t>(vec_float.size()),
                 "Vector for token " + token + " has " +
@@ -175,12 +174,11 @@ void _load_tokens_from_file_chunk(
                     " dimensions. All vectors must have "
                     "the same number of dimensions.");
 
-    if (stovec.find(token) != stovec.end()) {
+    if (stovec.contains(token)) {
       dup_tokens.push_back(token);
-      continue;
+    } else {
+      stovec.insert(std::move(token), torch::tensor(vec_float));
     }
-    stovec.insert(std::move(token), torch::tensor(vec_float));
-    num_vecs_loaded++;
   }
   promise.set_value(std::make_tuple(stovec, dup_tokens));
 }
@@ -218,6 +216,7 @@ void _concat_loaded_vectors_tuples(std::vector<LoadedChunkVectorsTuple> &tuples,
   *out_tuple = std::make_tuple(std::move(tokens), std::move(dup_tokens));
 }
 
+constexpr int64_t GRAIN_SIZE = 32768;
 std::tuple<c10::intrusive_ptr<Vectors>, std::vector<std::string>>
 _load_token_and_vectors_from_file(const std::string &file_path,
                                   const int64_t delimiter_ascii,
@@ -225,51 +224,37 @@ _load_token_and_vectors_from_file(const std::string &file_path,
                                   c10::optional<torch::Tensor> opt_unk_tensor) {
   std::cerr << "[INFO] Reading file " << file_path << std::endl;
 
-  std::tuple<int64_t, int64_t, int64_t> num_lines_headers_vector_dim_tuple =
+  int64_t num_lines, num_header_lines, vector_dim;
+  std::tie(num_lines, num_header_lines, vector_dim) =
       _infer_shape(file_path, delimiter_ascii);
 
-  int64_t num_lines = std::get<0>(num_lines_headers_vector_dim_tuple);
-  int64_t num_header_lines = std::get<1>(num_lines_headers_vector_dim_tuple);
-  int64_t vector_dim = std::get<2>(num_lines_headers_vector_dim_tuple);
-
-  // guard against num_lines being smaller than num_cpus
-  num_cpus = std::min(num_lines, num_cpus);
-  // need chunk size large enough to read entire file
-  int64_t chunk_size = num_lines / num_cpus + 1;
+  int64_t chunk_size = divup(num_lines, num_cpus);
+  // Launching a thread on less lines than this likely has too much overhead.
+  chunk_size = std::max(chunk_size, GRAIN_SIZE);
 
   std::vector<std::future<LoadedChunkVectorsTuple>> futures;
   std::vector<std::thread> threads;
   std::vector<LoadedChunkVectorsTuple> tuples;
 
   // create threads
-  for (int64_t i = 0; i < num_cpus; i++) {
+  for (int64_t i = num_header_lines; i < num_lines; i += chunk_size) {
     std::promise<LoadedChunkVectorsTuple> p;
     std::future<LoadedChunkVectorsTuple> f = p.get_future();
     futures.push_back(std::move(f));
 
-    // for first chunk of file we should start from the line after all the
-    // header lines
-    if (i == 0 && num_header_lines > 0) {
-      threads.push_back(std::thread(
-          _load_tokens_from_file_chunk, file_path, num_header_lines,
-          std::min(chunk_size - num_header_lines, num_lines - num_header_lines),
-          vector_dim, delimiter_ascii, std::move(p)));
-    } else {
-      threads.push_back(
-          std::thread(_load_tokens_from_file_chunk, file_path, i * chunk_size,
-                      std::min(chunk_size, num_lines - (i * chunk_size)),
-                      vector_dim, delimiter_ascii, std::move(p)));
-    }
+    threads.push_back(std::thread(_load_tokens_from_file_chunk, file_path, i,
+                                  std::min(num_lines, i + chunk_size),
+                                  vector_dim, delimiter_ascii, std::move(p)));
   }
 
   // join threads
-  for (int64_t i = 0; i < num_cpus; i++) {
-    threads[i].join();
+  for (auto& thread : threads) {
+    thread.join();
   }
 
   // get all loaded tuples
-  for (int64_t i = 0; i < num_cpus; i++) {
-    tuples.push_back(std::move(futures[i].get()));
+  for (auto& future : futures) {
+    tuples.push_back(std::move(future.get()));
   }
 
   LoadedVectorsTuple out_tuple;
