@@ -13,6 +13,7 @@ typedef std::vector<std::string> StringList;
 
 constexpr size_t SYS_BUFSIZE_MAX = INT_MAX >> 20 << 2;
 constexpr size_t MAX_TOKEN_SIZE = 512;
+constexpr size_t BUFSIZE = 64 * 1024;
 #ifdef EINTR
 #define IS_EINTR(x) ((x) == EINTR)
 #else
@@ -45,10 +46,13 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
                  const int64_t end_line, const int64_t vector_dim,
                  const int64_t delimiter_ascii,
                  std::shared_ptr<StringList> tokens, float *data_ptr) {
+  tokens->reserve(end_line - start_line);
+  // TODO: This needs error checking
   int fd = open(file_path.c_str(), O_RDONLY);
-  char buf[(16 * 1024) + 1];
+  char buf[BUFSIZE + 1];
   char token[MAX_TOKEN_SIZE];
-  posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+  // TODO: This surely isn't portable. Use a generic C++ implementation for unsupported platforms.
+  posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL | POSIX_FADV_NOREUSE);
 
   int converter_flags = double_conversion::StringToDoubleConverter::NO_FLAGS;
   double_conversion::StringToDoubleConverter converter(
@@ -59,7 +63,7 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
   size_t token_pointer = 0;
   size_t bytes_read;
   bool read_word = true;
-  while ((bytes_read = safe_read(fd, buf, (16 * 1024))) > 0) {
+  while ((bytes_read = safe_read(fd, buf, BUFSIZE)) > 0) {
     char *p = buf;
     char *end = p + bytes_read;
     while (p != end && line_count < start_line) {
@@ -110,6 +114,7 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
       token_pointer++;
     }
   }
+  close (fd);
 }
 
 } // namespace torchtext
