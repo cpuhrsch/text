@@ -31,8 +31,8 @@ def benchmark_experimental_vectors():
 
     # experimental FastText construction
     print("FastText Experimental")
-    # for num_cpus in [1, 4, 8, 16]:
-    for num_cpus in [2]:
+    for num_cpus in [1, 4, 8, 16]:
+    # for num_cpus in [2]:
         t0 = time.monotonic()
         fast_text_experimental = FastTextExperimental(validate_file=False, num_cpus=num_cpus)
         print("Construction time:", time.monotonic() - t0, " num_cpus: ", num_cpus)
