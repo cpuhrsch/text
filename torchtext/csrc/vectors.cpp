@@ -139,43 +139,6 @@ _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
   return std::make_tuple(num_lines, num_header_lines, vector_dim);
 }
 
-void cpp_parse_chunk(const std::string &file_path, const int64_t start_line,
-                 const int64_t end_line, const int64_t vector_dim,
-                 const int64_t delimiter_ascii,
-                 std::shared_ptr<StringList> tokens, float *data_ptr) {
-  std::ifstream fin;
-  fin.open(file_path, std::ios::in);
-
-  // get to line we care about
-  for (int64_t i = 0; i < start_line; i++) {
-    fin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-  }
-
-  int converter_flags = double_conversion::StringToDoubleConverter::NO_FLAGS;
-  double_conversion::StringToDoubleConverter converter(
-      converter_flags, 0.0f, double_conversion::Single::NaN(), NULL, NULL);
-
-  for (int64_t i = start_line; i < end_line; i++) {
-    std::string token;
-    // read the token
-    std::getline(fin, token, static_cast<char>(delimiter_ascii));
-    tokens->push_back(token);
-
-    std::string vec_val;
-    // read the vector
-    for (int64_t j = 0; j < vector_dim; j++) {
-      fin >> vec_val;
-      const char *tmp_str = vec_val.c_str();
-      int processed_characters_count;
-      data_ptr[i * vector_dim + j] = converter.StringToFloat(
-          tmp_str, strlen(tmp_str), &processed_characters_count);
-      // TODO: Check character count? Use character count to forward file
-      // descriptor?
-    }
-    fin >> std::ws;
-  }
-}
-
 std::tuple<IndexDict, StringList>
 concat_vectors(std::vector<std::shared_ptr<StringList>> chunk_tokens,
                torch::Tensor data_tensor, int64_t num_header_lines,

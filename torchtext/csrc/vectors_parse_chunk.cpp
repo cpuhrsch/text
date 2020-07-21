@@ -45,7 +45,6 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
                  const int64_t end_line, const int64_t vector_dim,
                  const int64_t delimiter_ascii,
                  std::shared_ptr<StringList> tokens, float *data_ptr) {
-  // std::cout << "asdfSasdfkljF" << std::endl;
   int fd = open(file_path.c_str(), O_RDONLY);
   char buf[(16 * 1024) + 1];
   char token[MAX_TOKEN_SIZE];
@@ -60,13 +59,11 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
   size_t token_pointer = 0;
   size_t bytes_read;
   bool read_word = true;
-  // std::cout << "asdfSHDJF" << std::endl;
   while ((bytes_read = safe_read(fd, buf, (16 * 1024))) > 0) {
     char *p = buf;
     char *end = p + bytes_read;
     while (p != end && line_count < start_line) {
       line_count += *p++ == '\n';
-      // std::cout << "line_count: " << line_count << std::endl;
     }
     if (p == end) {
       continue;
@@ -75,14 +72,11 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
       continue;
     }
     while (p != end && line_count < end_line) {
-      // std::cout << "SHDJF" << std::endl;
       TORCH_CHECK(token_pointer < MAX_TOKEN_SIZE,
                   "Exceeded maximum token length.");
       if (*p == static_cast<char>(delimiter_ascii) || *p == ' ') {
         if (read_word) {
           auto result_token = std::string(token, token_pointer);
-          // std::cout << "found delimiter - result_token: " << result_token
-          //           << " - token_pointer: " << token_pointer << std::endl;
           tokens->push_back(result_token);
           vector_pointer = 0;
           token_pointer = 0;
@@ -90,18 +84,11 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
           read_word = false;
           continue;
         }
-        // std::cout << "found whitespace" << std::endl;
         if (token_pointer > 0) {
-          // std::cout << "processing token" << std::endl;
           int processed_characters_count;
           data_ptr[line_count * vector_dim + vector_pointer] =
               converter.StringToFloat(token, token_pointer,
                                       &processed_characters_count);
-          // std::cout << "processed " << processed_characters_count << std::endl;
-          // if (processed_characters_count == 0) {
-          //   token_pointer = 0;
-          //   continue;
-          // }
           TORCH_CHECK(processed_characters_count == token_pointer,
                       "Parsed less than token length: ",
                       processed_characters_count, " vs ", token_pointer);
@@ -112,7 +99,6 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
         continue;
       }
       if (*p == '\n') {
-        // std::cout << "found newline - line_count: " << line_count << std::endl;
         line_count++;
         vector_pointer = 0;
         token_pointer = 0;
@@ -120,7 +106,6 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
         p++;
         continue;
       }
-      // std::cout << "token_pointer: " << token_pointer << std::endl;
       token[token_pointer] = *p++;
       token_pointer++;
     }
