@@ -138,17 +138,37 @@ _infer_shape(const std::string &file_path, const int64_t delimiter_ascii) {
   return std::make_tuple(num_lines, num_header_lines, vector_dim);
 }
 
-void parse_chunk(const std::string &file_path, const int64_t start_line,
+std::vector<size_t> _infer_offsets(const std::string &file_path,
+                                   int64_t num_lines, int64_t chunk_size,
+                                   int64_t num_header_lines) {
+
+  std::ifstream fin;
+  fin.open(file_path, std::ios::in);
+
+  while (num_header_lines > 0) {
+    fin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    num_header_lines--;
+  }
+  std::vector<size_t> offsets;
+  offsets.push_back(fin.tellg());
+  size_t offset = 0;
+  while (fin.ignore(std::numeric_limits<std::streamsize>::max(), '\n')) {
+    offset++;
+    if (offset % chunk_size == 0) {
+      offsets.push_back(fin.tellg());
+    }
+  }
+  return offsets;
+}
+
+void parse_chunk(const std::string &file_path, size_t offset, const int64_t start_line,
                  const int64_t end_line, const int64_t vector_dim,
                  const int64_t delimiter_ascii,
                  std::shared_ptr<StringList> tokens, float *data_ptr) {
   std::ifstream fin;
   fin.open(file_path, std::ios::in);
 
-  // get to line we care about
-  for (int64_t i = 0; i < start_line; i++) {
-    fin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-  }
+  fin.seekg(offset);
 
   int converter_flags = double_conversion::StringToDoubleConverter::NO_FLAGS;
   double_conversion::StringToDoubleConverter converter(
@@ -215,16 +235,18 @@ _load_token_and_vectors_from_file(const std::string &file_path,
   std::tie(num_lines, num_header_lines, vector_dim) =
       _infer_shape(file_path, delimiter_ascii);
 
+  int64_t chunk_size = divup(num_lines, num_cpus);
+  // Launching a thread on less lines than this likely has too much overhead.
+  // TODO: Add explicit test beyond grain size to cover multithreading
+  chunk_size = std::max(chunk_size, GRAIN_SIZE);
+  auto offsets = _infer_offsets(file_path, num_lines, chunk_size, num_header_lines);
+
   auto end = std::chrono::steady_clock::now();
   std::chrono::duration<double> elapsed_seconds = end - start;
   std::cout << "_infer_shape elapsed time: " << elapsed_seconds.count()
             << "s\n";
 
   start = std::chrono::steady_clock::now();
-  int64_t chunk_size = divup(num_lines, num_cpus);
-  // Launching a thread on less lines than this likely has too much overhead.
-  // TODO: Add explicit test beyond grain size to cover multithreading
-  chunk_size = std::max(chunk_size, GRAIN_SIZE);
 
   torch::Tensor data_tensor = torch::empty({num_lines, vector_dim});
   float *data_ptr = data_tensor.data_ptr<float>();
@@ -232,13 +254,15 @@ _load_token_and_vectors_from_file(const std::string &file_path,
   std::vector<std::shared_ptr<StringList>> chunk_tokens;
 
   // create threads
+  int64_t j = 0;
   for (int64_t i = num_header_lines; i < num_lines; i += chunk_size) {
     auto tokens_ptr = std::make_shared<StringList>();
     // TODO: Replace this with at::launch
     threads.push_back(std::thread(
-        parse_chunk, file_path, i, std::min(num_lines, i + chunk_size),
+        parse_chunk, file_path, offsets[j], i, std::min(num_lines, i + chunk_size),
         vector_dim, delimiter_ascii, tokens_ptr, data_ptr));
     chunk_tokens.push_back(tokens_ptr);
+    j++;
   }
 
   // join threads
