@@ -42,23 +42,25 @@ size_t safe_read(int fd, void *buf, size_t count) {
 #define O_WRONLY 01
 #define O_RDWR 02
 
-void parse_chunk(const std::string &file_path, const int64_t start_line,
-                 const int64_t end_line, const int64_t vector_dim,
-                 const int64_t delimiter_ascii,
+void parse_chunk(const std::string &file_path, size_t offset,
+                 const int64_t start_line, const int64_t end_line,
+                 const int64_t vector_dim, const int64_t delimiter_ascii,
                  std::shared_ptr<StringList> tokens, float *data_ptr) {
   tokens->reserve(end_line - start_line);
   // TODO: This needs error checking
   int fd = open(file_path.c_str(), O_RDONLY);
   char buf[BUFSIZE + 1];
   char token[MAX_TOKEN_SIZE];
-  // TODO: This surely isn't portable. Use a generic C++ implementation for unsupported platforms.
+  // TODO: This surely isn't portable. Use a generic C++ implementation for
+  // unsupported platforms.
   posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL | POSIX_FADV_NOREUSE);
+  lseek(fd, offset, SEEK_SET);
 
   int converter_flags = double_conversion::StringToDoubleConverter::NO_FLAGS;
   double_conversion::StringToDoubleConverter converter(
       converter_flags, 0.0f, double_conversion::Single::NaN(), NULL, NULL);
 
-  int64_t line_count = 0;
+  int64_t line_count = start_line;
   int64_t vector_pointer = 0;
   size_t token_pointer = 0;
   size_t bytes_read;
@@ -66,15 +68,15 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
   while ((bytes_read = safe_read(fd, buf, BUFSIZE)) > 0) {
     char *p = buf;
     char *end = p + bytes_read;
-    while (p != end && line_count < start_line) {
-      line_count += *p++ == '\n';
-    }
-    if (p == end) {
-      continue;
-    }
-    if (line_count < start_line) {
-      continue;
-    }
+    // while (p != end && line_count < start_line) {
+    //   line_count += *p++ == '\n';
+    // }
+    // if (p == end) {
+    //   continue;
+    // }
+    // if (line_count < start_line) {
+    //   continue;
+    // }
     while (p != end && line_count < end_line) {
       TORCH_CHECK(token_pointer < MAX_TOKEN_SIZE,
                   "Exceeded maximum token length.");
@@ -114,7 +116,7 @@ void parse_chunk(const std::string &file_path, const int64_t start_line,
       token_pointer++;
     }
   }
-  close (fd);
+  close(fd);
 }
 
 } // namespace torchtext

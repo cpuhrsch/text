@@ -12,9 +12,10 @@
 
 namespace torchtext {
 
-void parse_chunk(const std::string &file_path, const int64_t start_line,
-                 const int64_t end_line, const int64_t vector_dim,
-                 const int64_t delimiter_ascii,
-                 std::shared_ptr<std::vector<std::string>> tokens, float *data_ptr);
+void parse_chunk(const std::string &file_path, size_t offset,
+                 const int64_t start_line, const int64_t end_line,
+                 const int64_t vector_dim, const int64_t delimiter_ascii,
+                 std::shared_ptr<std::vector<std::string>> tokens,
+                 float *data_ptr);
 
 }
