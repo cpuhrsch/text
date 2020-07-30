@@ -5,6 +5,8 @@ from . import utils
 from . import vocab
 from . import experimental
 
+from . import _torchtext as _C
+
 
 try:
     from .version import __version__, git_version  # noqa: F401
