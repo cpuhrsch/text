@@ -9,7 +9,7 @@ from torchtext.experimental.transforms import (
     BasicEnglishNormalize,
     TextSequentialTransforms,
 )
-from torchtext.experimental.vocab import Vocab as VocabExperimental
+from torchtext.experimental.vocab import vocab as VocabExperimental
 
 
 class VocabTransform(nn.Module):

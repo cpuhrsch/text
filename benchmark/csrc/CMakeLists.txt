@@ -12,5 +12,6 @@ set_target_properties(torchtext PROPERTIES IMPORTED_LOCATION "/private/home/cpuh
 message("${TORCH_LIBRARIES}")
 add_executable(benchmark-jit_pipeline benchmark_jit_pipeline.cpp)
 target_link_libraries(benchmark-jit_pipeline torchtext)
+target_link_libraries(benchmark-jit_pipeline -Wl,--no-as-needed torchtext)
 target_link_libraries(benchmark-jit_pipeline "${TORCH_LIBRARIES}")
 # set_property(TARGET benchmark-jit_pipeline PROPERTY CXX_STANDARD 14)
