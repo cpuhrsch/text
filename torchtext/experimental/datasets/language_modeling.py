@@ -3,6 +3,7 @@ from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
 from torchtext.experimental.datasets.raw import language_modeling as raw
 from torchtext.experimental.functional import vocab_func, totensor, sequential_transforms
+from torch.utils.data import DataLoader
 
 
 def build_vocab(data, transforms):
@@ -43,7 +44,11 @@ class LanguageModelingDataset(torch.utils.data.Dataset):
         self.single_line = single_line
         self.data = data
         if single_line:
-            self.data = torch.cat(self.data)
+            tmp_data = []
+            for d in self.data:
+                if d.numel() > 0:
+                    tmp_data.append(d[0])
+            self.data = torch.cat(tmp_data)
 
     def __getitem__(self, i):
         if self.single_line:
@@ -60,6 +65,39 @@ class LanguageModelingDataset(torch.utils.data.Dataset):
 
     def get_vocab(self):
         return self.vocab
+
+
+class _IterableWrapper(torch.utils.data.IterableDataset):
+    def __init__(self, iterator, num_lines, tokenizer, vocab):
+        super(_IterableWrapper, self).__init__()
+        self.num_lines = num_lines
+        self.init_iterator = iterator
+        self.iterator = None
+        self.tokenizer = tokenizer
+        self.vocab = vocab
+
+    def setup_iterator(self, init_iterator):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info:
+            chunk = int(self.num_lines / worker_info.num_workers)
+            start = chunk * worker_info.id
+            read = chunk
+            if worker_info.id == worker_info.num_workers - 1:
+                # The last worker needs to pick up some extra lines
+                # if the number of lines aren't exactly divisible
+                # by the number of workers.
+                extra = self.num_lines % worker_info.num_workers
+                read += extra
+        else:
+            start = 0
+            read = self.num_lines
+        return init_iterator(start, read)
+
+    def __iter__(self):
+        if not self.iterator:
+            self.iterator = self.setup_iterator(self.init_iterator)
+        for d in self.iterator:
+            yield torch.tensor([self.vocab[t] for t in self.tokenizer(d)], dtype=torch.long)
 
 
 def _setup_datasets(dataset_name, tokenizer=None, root='.data', vocab=None,
@@ -80,13 +118,32 @@ def _setup_datasets(dataset_name, tokenizer=None, root='.data', vocab=None,
             raise TypeError("Must pass a vocab if train is not selected.")
         train, = raw.DATASETS[dataset_name](root=root, data_select=('train',))
         vocab = build_vocab(train, text_transform)
-    text_transform = sequential_transforms(tokenizer, vocab_func(vocab), totensor(dtype=torch.long))
-    # Materialize raw text iterable dataset
-    raw_data = {}
+
+    # text_transform = sequential_transforms(tokenizer, vocab_func(vocab), totensor(dtype=torch.long))
     raw_iter = raw.DATASETS[dataset_name](root=root, data_select=data_select)
+    raw_num_lines = {}
     for i in range(len(raw_iter)):
         name = data_select[i]
-        raw_data[name] = [text_transform(txt) for txt in raw_iter[i]]
+        raw_num_lines[name] = sum(1 for d in raw_iter[i])
+
+    raw_data = {}
+    for i in range(len(raw_iter)):
+        name = data_select[i]
+
+        def build_raw_iter(start, num_lines):
+            raw_iter, = raw.DATASETS[dataset_name](root=root, data_select=(name,), start=start, num_lines=num_lines)
+            return raw_iter
+        num_lines = raw_num_lines[name]
+        # DataLoader overhead is high enough that we need to know its worth to construct
+        if raw_num_lines[name] < 1:  # 100000:
+            def text_transform(line):
+                tokens = tokenizer(line)
+                return torch.tensor([vocab[t] for t in tokens], dtype=torch.long)
+            raw_data[name] = [text_transform(txt) for txt in build_raw_iter(0, num_lines)]
+        else:
+            data_iter = DataLoader(_IterableWrapper(build_raw_iter, num_lines, tokenizer, vocab),
+                                   num_workers=2) #torch.get_num_threads())
+            raw_data[name] = [txt for txt in data_iter]
     return tuple(LanguageModelingDataset(raw_data[item], vocab, lambda x: x, single_line)
                  for item in data_select)
 
