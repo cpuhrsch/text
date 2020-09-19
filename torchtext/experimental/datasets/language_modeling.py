@@ -43,12 +43,12 @@ class LanguageModelingDataset(torch.utils.data.Dataset):
         self.transforms = transforms
         self.single_line = single_line
         self.data = data
-        if single_line:
-            tmp_data = []
-            for d in self.data:
-                if d.numel() > 0:
-                    tmp_data.append(d[0])
-            self.data = torch.cat(tmp_data)
+        # if single_line:
+        #     tmp_data = []
+        #     for d in self.data:
+        #         if d.numel() > 0:
+        #             tmp_data.append(d[0])
+        #     self.data = torch.cat(tmp_data)
 
     def __getitem__(self, i):
         if self.single_line:
@@ -97,7 +97,8 @@ class _IterableWrapper(torch.utils.data.IterableDataset):
         if not self.iterator:
             self.iterator = self.setup_iterator(self.init_iterator)
         for d in self.iterator:
-            yield torch.tensor([self.vocab[t] for t in self.tokenizer(d)], dtype=torch.long)
+            yield d
+            # yield torch.tensor([self.vocab[t] for t in self.tokenizer(d)], dtype=torch.long)
 
 
 def _setup_datasets(dataset_name, tokenizer=None, root='.data', vocab=None,
@@ -141,9 +142,12 @@ def _setup_datasets(dataset_name, tokenizer=None, root='.data', vocab=None,
                 return torch.tensor([vocab[t] for t in tokens], dtype=torch.long)
             raw_data[name] = [text_transform(txt) for txt in build_raw_iter(0, num_lines)]
         else:
-            data_iter = DataLoader(_IterableWrapper(build_raw_iter, num_lines, tokenizer, vocab),
-                                   num_workers=2) #torch.get_num_threads())
-            raw_data[name] = [txt for txt in data_iter]
+            data_iter = DataLoader(_IterableWrapper(build_raw_iter, num_lines, tokenizer, vocab.stoi),
+                                   num_workers=torch.get_num_threads())
+            raw_data[name] = []
+            for txt in data_iter:
+                raw_data[name].append(txt)
+            del data_iter
     return tuple(LanguageModelingDataset(raw_data[item], vocab, lambda x: x, single_line)
                  for item in data_select)
 
